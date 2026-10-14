@@ -669,7 +669,7 @@ class MainActivity : AppCompatActivity() {
         // 1. API Key (Required)
         val tvApiLabel = TextView(this).apply {
             text = "Google Gemini API Key (Required):"
-            textSize = 13sp
+            textSize = 13f
             setTextColor(ContextCompat.getColor(this@MainActivity, R.color.cyan_glow))
         }
         val etApi = EditText(this).apply {
