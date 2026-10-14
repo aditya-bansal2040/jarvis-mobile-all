@@ -318,10 +318,10 @@ LANGUAGE & VOICE STYLE:
             return@withContext Result.failure(Exception("Speech text is empty."))
         }
 
-        val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-tts:generateContent?key=$apiKey"
         val root = JsonObject().apply {
             val contents = JsonArray().apply {
                 val turn = JsonObject().apply {
+                    addProperty("role", "user")
                     val parts = JsonArray().apply {
                         val part = JsonObject().apply {
                             addProperty("text", clean)
@@ -342,7 +342,10 @@ LANGUAGE & VOICE STYLE:
 
                 val speechConfig = JsonObject().apply {
                     val voiceConfig = JsonObject().apply {
-                        addProperty("voice", voiceName)
+                        val prebuiltVoiceConfig = JsonObject().apply {
+                            addProperty("voiceName", voiceName)
+                        }
+                        add("prebuiltVoiceConfig", prebuiltVoiceConfig)
                     }
                     add("voiceConfig", voiceConfig)
                 }
@@ -351,50 +354,75 @@ LANGUAGE & VOICE STYLE:
             add("generationConfig", genConfig)
         }
 
-        try {
-            val reqBody = root.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
-            val request = Request.Builder()
-                .url(endpoint)
-                .post(reqBody)
-                .build()
+        val candidateTtsModels = listOf(
+            "gemini-2.0-flash",
+            "gemini-2.5-flash-preview-tts",
+            "gemini-3.8-flash-tts",
+            "gemini-3.8-flash-lite-tts"
+        )
 
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful) {
-                val errBody = response.body?.string() ?: ""
-                return@withContext Result.failure(IOException("TTS API Error (${response.code}): $errBody"))
-            }
+        var lastError: Exception? = null
 
-            val respString = response.body?.string() ?: ""
-            val jsonResp = gson.fromJson(respString, JsonObject::class.java)
-            val candidates = jsonResp.getAsJsonArray("candidates")
-            if (candidates == null || candidates.size() == 0) {
-                return@withContext Result.failure(Exception("No speech candidates returned."))
-            }
+        for (currModel in candidateTtsModels) {
+            val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/$currModel:generateContent?key=$apiKey"
+            try {
+                val reqBody = root.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+                val request = Request.Builder()
+                    .url(endpoint)
+                    .addHeader("x-goog-api-key", apiKey)
+                    .post(reqBody)
+                    .build()
 
-            val parts = candidates[0].asJsonObject
-                .getAsJsonObject("content")
-                ?.getAsJsonArray("parts")
+                val response = client.newCall(request).execute()
+                if (!response.isSuccessful) {
+                    val code = response.code
+                    val errBody = response.body?.string() ?: ""
+                    lastError = IOException("TTS API Error ($currModel - $code): $errBody")
+                    continue
+                }
 
-            var b64Audio: String? = null
-            if (parts != null) {
-                for (i in 0 until parts.size()) {
-                    val p = parts[i].asJsonObject
-                    if (p.has("inlineData")) {
-                        b64Audio = p.getAsJsonObject("inlineData").get("data")?.asString
-                        break
+                val respString = response.body?.string() ?: ""
+                val jsonResp = gson.fromJson(respString, JsonObject::class.java)
+                val candidates = jsonResp.getAsJsonArray("candidates")
+                if (candidates == null || candidates.size() == 0) {
+                    lastError = Exception("No speech candidates returned from $currModel.")
+                    continue
+                }
+
+                val parts = candidates[0].asJsonObject
+                    .getAsJsonObject("content")
+                    ?.getAsJsonArray("parts")
+
+                var b64Audio: String? = null
+                if (parts != null) {
+                    for (i in 0 until parts.size()) {
+                        val p = parts[i].asJsonObject
+                        val inlineObj = when {
+                            p.has("inlineData") -> p.getAsJsonObject("inlineData")
+                            p.has("inline_data") -> p.getAsJsonObject("inline_data")
+                            else -> null
+                        }
+                        if (inlineObj != null && inlineObj.has("data")) {
+                            b64Audio = inlineObj.get("data")?.asString
+                            break
+                        }
                     }
                 }
-            }
 
-            if (b64Audio.isNullOrBlank()) {
-                return@withContext Result.failure(Exception("No audio bytes returned in response."))
-            }
+                if (b64Audio.isNullOrBlank()) {
+                    lastError = Exception("No audio data returned in response from $currModel.")
+                    continue
+                }
 
-            val wavBytes = Base64.decode(b64Audio, Base64.DEFAULT)
-            Result.success(wavBytes)
-        } catch (e: Exception) {
-            Result.failure(e)
+                val rawBytes = Base64.decode(b64Audio, Base64.DEFAULT)
+                val wavBytes = SpeechEngine.ensureWavHeader(rawBytes)
+                return@withContext Result.success(wavBytes)
+            } catch (e: Exception) {
+                lastError = e
+            }
         }
+
+        Result.failure(lastError ?: Exception("Unable to synthesize speech with Gemini models."))
     }
 
     fun cancelActiveCall() {

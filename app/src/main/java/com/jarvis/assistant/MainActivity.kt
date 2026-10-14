@@ -772,8 +772,18 @@ class MainActivity : AppCompatActivity() {
                     )
                     if (testAudio.isSuccess) {
                         speechEngine.playNeuralAudio(testAudio.getOrNull()!!)
+                        Toast.makeText(this@MainActivity, "Playing $selectedVoice audio!", Toast.LENGTH_SHORT).show()
                     } else {
-                        Toast.makeText(this@MainActivity, "TTS error: ${testAudio.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                        val rawErr = testAudio.exceptionOrNull()?.message ?: "Voice generation failed"
+                        val cleanErr = if (rawErr.contains("API_KEY_INVALID")) {
+                            "Invalid API Key. Please verify your Gemini key."
+                        } else if (rawErr.contains("429")) {
+                            "Rate limit reached. Please wait a moment."
+                        } else {
+                            rawErr.take(120)
+                        }
+                        Toast.makeText(this@MainActivity, "Voice Error: $cleanErr", Toast.LENGTH_LONG).show()
+                        speechEngine.speakFallbackTts("Hello! Fallback voice activated.")
                     }
                 }
             }
